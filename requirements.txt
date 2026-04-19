@@ -1,0 +1,8 @@
+PyPDF2
+chromadb
+sentence-transformers
+streamlit
+google-generativeai
+pymupdf
+youtube-search-python
+numpy
