@@ -5,6 +5,16 @@ import urllib.request
 import urllib.parse
 import re
 
+# --- 1. BUILD THE DB IN THE CLOUD FIRST ---
+from db2 import build_database
+
+if not os.path.exists("./chroma_db_storage"):
+    with st.spinner("Initializing AI Knowledge Base for the first time... Please wait 1-2 minutes."):
+        build_database()
+
+# --- 2. NOW IMPORT RETRIEVER ---
+from retriever2 import get_relevant_course_context, get_page_image, calculate_hallucination_score
+
 # --- SECRETS & CONFIG ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-2.5-flash') # Or 'gemini-pro' if this 404s
