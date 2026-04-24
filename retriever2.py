@@ -28,17 +28,17 @@ def get_page_image(pdf_filename, page_num):
     except:
         return None
 
-def get_relevant_course_context(user_query: str, subject: str = "All", level: str = "Beginner", max_distance: float = 1.0):
+def get_relevant_course_context(user_query: str, subject: str = "All", level: str = "Beginner", max_distance: float = 1.5):
     query_vector = embedding_model.encode(user_query).tolist()
 
-    # Feature 2: Filter by Subject AND Level
+    # Filter by Subject AND Level
     where_clause = {"level": level}
     if subject != "All":
         where_clause = {"$and": [{"subject": subject}, {"level": level}]}
 
     query_params = {
         "query_embeddings": [query_vector],
-        "n_results": 7, # Grab a few more to find the best definition
+        "n_results": 4, # Just grab the top 4 most semantically similar chunks directly
         "where": where_clause
     }
 
@@ -50,26 +50,14 @@ def get_relevant_course_context(user_query: str, subject: str = "All", level: st
         dists = results['distances'][0]
         metas = results['metadatas'][0]
 
-        query_words = set([w.lower() for w in user_query.split() if len(w) > 3])
-
         for i in range(len(docs)):
             if dists[i] <= max_distance:
                 meta = metas[i]
-                doc_text = docs[i]
-                
-                # Feature 3: Keyword Frequency (Finds the main definition)
-                doc_words = doc_text.lower().split()
-                keyword_score = sum(doc_words.count(w) for w in query_words)
-
                 valid_chunks.append({
-                    "text": doc_text,
+                    "text": docs[i],
                     "source": meta.get('source', 'Unknown'),
-                    "page": meta.get('page', 1),
-                    "score": keyword_score
+                    "page": meta.get('page', 1)
                 })
-
-        # Sort by highest keyword score to push the "Main Definition" to index 0
-        valid_chunks.sort(key=lambda x: x['score'], reverse=True)
 
     return valid_chunks
 

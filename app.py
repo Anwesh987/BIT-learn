@@ -4,10 +4,11 @@ from retriever2 import get_relevant_course_context, get_page_image, calculate_ha
 import urllib.request
 import urllib.parse
 import re
+import os
 
 # --- SECRETS & CONFIG ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-2.5-flash') # Or 'gemini-pro' if this 404s
+model = genai.GenerativeModel('gemini-2.5-flash') # Uses the stable API version
 
 # Premium Allowed Accounts (Username: Password)
 PREMIUM_ACCOUNTS = {
@@ -89,17 +90,32 @@ if st.button("Search & Analyze", type="primary"):
     if q:
         with st.spinner("Searching textbooks and calculating metrics..."):
             try:
-                expand_prompt = f"Expand any computer science abbreviations or slang in this query. Return ONLY the expanded text.\nQuery: '{q}'"
-                smart_q = model.generate_content(expand_prompt).text.strip()
-                if debug: st.sidebar.write(f"Expanded Query: {smart_q}")
+                # 1. THE QUERY REWRITER (Hyper-fast, handles Telugu/Acronyms safely)
+                rewrite_prompt = f"You are a search query optimizer. The user asked: '{q}'. Translate this to English if needed, and expand any computer science acronyms or slang. If it is already a clean English phrase, just return the original phrase. Return ONLY the clean, expanded English search phrase, nothing else."
+                
+                rewrite_res = model.generate_content(
+                    rewrite_prompt, 
+                    generation_config=genai.GenerationConfig(temperature=0.1)
+                )
+                
+                # SAFE EXTRACTION: Prevents the "finish_reason is 1" crash
+                try:
+                    smart_q = rewrite_res.text.strip()
+                    if not smart_q: 
+                        smart_q = q
+                except Exception:
+                    smart_q = q 
+                
+                if debug: st.sidebar.write(f"Database Searched For: {smart_q}")
 
+                # 2. SEARCH THE DATABASE WITH THE CLEAN QUERY
                 res = get_relevant_course_context(smart_q, subject=subject, level=learning_level)
                 
                 if not res:
                     st.error(f"Nothing found for {learning_level} level in {subject}.")
                 else:
                     st.session_state.data = res
-                    ctx = "\n\n".join([f"Source P{r['page']}: {r['text']}" for r in res])
+                    ctx = "\n\n".join([f"Source P{r['page']}: {r['text']}" for r in res[:4]])
                     
                     level_prompts = {
                         "Beginner": "Use very simple language, basic analogies, and avoid overly complex jargon.",
@@ -107,19 +123,23 @@ if st.button("Search & Analyze", type="primary"):
                         "Advanced": "Provide a highly technical, deep dive. Focus on architecture and algorithms."
                     }
                     
+                    # 3. THE FINAL GENERATION (Answers in the user's selected language)
                     prompt = f"""
-                    You are a strict academic AI. Explain '{q}' in {language}.
+                    You are a strict academic AI. Explain the concept of '{smart_q}' to the user in {language}. 
                     Approach: {level_prompts[learning_level]}
                     CRITICAL: You must construct your explanation ONLY using the facts from the context below. 
                     CONTEXT:\n{ctx}\n
                     Keep core technical terms in English. Use clean Markdown formatting.
                     """
                     
-                    ai_res = model.generate_content(prompt, generation_config=genai.GenerationConfig(temperature=0.1))
+                    ai_res = model.generate_content(
+                        prompt, 
+                        generation_config=genai.GenerationConfig(temperature=0.1)
+                    )
                     st.session_state.ans = ai_res.text
                     st.session_state.hal_score = calculate_hallucination_score(ai_res.text, ctx)
-                    st.session_state.yt_links = get_yt_videos(smart_q + " " + subject + " " + language)
-                    st.session_state.premium_notes = None # Reset notes for new search
+                    st.session_state.yt_links = get_yt_videos(smart_q + " " + subject)
+                    st.session_state.premium_notes = None 
                     
             except Exception as e:
                 st.error(f"An error occurred: {e}")
@@ -134,7 +154,7 @@ if st.session_state.data and st.session_state.ans:
         
         st.markdown(f"""
         <div style="display: flex; align-items: center; margin-bottom: 10px;">
-            <h3 style="margin: 0; padding-right: 10px;">🤖 AI Explanation ({language})</h3>
+            <h3 style="margin: 0; padding-right: 10px;"> AI Explanation ({language})</h3>
             <div title="Hallucination Probability: {score}%" 
                  style="width: 15px; height: 15px; border-radius: 50%; background-color: {color}; box-shadow: 0 0 5px {color};">
             </div>
@@ -142,7 +162,7 @@ if st.session_state.data and st.session_state.ans:
         """, unsafe_allow_html=True)
         st.markdown(st.session_state.ans)
         
-        # ---  PREMIUM FEATURE UI ---
+        # --- PREMIUM FEATURE UI ---
         st.markdown("---")
         st.subheader(" Premium Study Guide")
         
@@ -153,7 +173,16 @@ if st.session_state.data and st.session_state.ans:
             if not st.session_state.premium_notes:
                 if st.button("Generate Detailed Notes"):
                     with st.spinner("Generating premium extensive notes..."):
-                        notes_prompt = f"Write a highly detailed, 5-part study guide on '{q}'. Include: 1) Core Definition, 2) Step-by-Step Mechanism, 3) Real World Use Cases, 4) 3 Likely Exam Questions with Answers, 5) Summary. Make it highly educational."
+                        # FIX: Reconstruct context from session state so it exists during this button's rerun
+                        current_ctx = "\n\n".join([f"Source P{r['page']}: {r['text']}" for r in st.session_state.data[:4]])
+                        
+                        notes_prompt = f"""
+                        Write a highly detailed 5-part study guide in {language} on '{q}'. 
+                        Include: 1) Core Definition, 2) Step-by-Step Mechanism, 3) Real World Use Cases, 4) 3 Likely Exam Questions with Answers, 5) Summary. 
+                        Make it highly educational.
+                        CRITICAL: Base all facts entirely on this course context:
+                        {current_ctx}
+                        """
                         notes_res = model.generate_content(notes_prompt)
                         st.session_state.premium_notes = notes_res.text
                         st.rerun()
@@ -163,20 +192,20 @@ if st.session_state.data and st.session_state.ans:
                 st.download_button(
                     label=" Download Premium Notes (.txt)",
                     data=st.session_state.premium_notes,
-                    file_name=f"{q.replace(' ', '_')}_Premium_Notes.txt",
+                    file_name=f"{q.replace(' ', '_')}_Notes.txt",
                     mime="text/plain",
                     type="primary"
                 )
 
     with c2:
         st.subheader("Top Reference (Main Definition)")
-        top_res = st.session_state.data[0]
+        data = st.session_state.data
+        top_res = data[0]
         st.success(f"Primary Source: {top_res['source']} (Page {top_res['page']})")
         if st.button(f" Open Primary Page {top_res['page']}", key="primary_img"):
             show_page_pop(top_res['source'], top_res['page'])
-            
         with st.expander("View Other Found Pages"):
-            for i, item in enumerate(st.session_state.data[1:]): 
+            for i, item in enumerate(data[1:]):
                 st.write(f"**{item['source']}** (Page {item['page']})")
                 if st.button(f"Open Page {item['page']}", key=f"b{i}"):
                     show_page_pop(item['source'], item['page'])
