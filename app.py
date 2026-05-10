@@ -85,7 +85,7 @@ with st.sidebar:
     debug = st.checkbox("Show Debug Info")
 
 # --- MAIN ENGINE ---
-q = st.text_input("Ask a question about your syllabus:")
+q = st.text_input("Ask a question from your syllabus:")
 if st.button("Search & Analyze", type="primary"):
     if q:
         with st.spinner("Searching textbooks and calculating metrics..."):
